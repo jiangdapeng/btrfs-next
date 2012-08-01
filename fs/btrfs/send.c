@@ -863,7 +863,6 @@ static int iterate_dir_item(struct send_ctx *sctx,
 	struct extent_buffer *eb;
 	struct btrfs_item *item;
 	struct btrfs_dir_item *di;
-	struct btrfs_path *tmp_path = NULL;
 	struct btrfs_key di_key;
 	char *buf = NULL;
 	char *buf2 = NULL;
@@ -881,12 +880,6 @@ static int iterate_dir_item(struct send_ctx *sctx,
 	buf_len = PAGE_SIZE;
 	buf = kmalloc(buf_len, GFP_NOFS);
 	if (!buf) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	tmp_path = alloc_path_for_send();
-	if (!tmp_path) {
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -952,7 +945,6 @@ static int iterate_dir_item(struct send_ctx *sctx,
 	}
 
 out:
-	btrfs_free_path(tmp_path);
 	if (buf_virtual)
 		vfree(buf);
 	else
