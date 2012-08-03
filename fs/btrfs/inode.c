@@ -75,6 +75,7 @@ struct kmem_cache *btrfs_trans_handle_cachep;
 struct kmem_cache *btrfs_transaction_cachep;
 struct kmem_cache *btrfs_path_cachep;
 struct kmem_cache *btrfs_free_space_cachep;
+static struct kmem_cache *btrfs_dip_cachep;
 
 #define S_SHIFT 12
 static unsigned char btrfs_type_by_mode[S_IFMT >> S_SHIFT] = {
@@ -6078,7 +6079,7 @@ failed:
 		      dip->logical_offset + dip->bytes - 1);
 	bio->bi_private = dip->private;
 
-	kfree(dip);
+	kmem_cache_free(btrfs_dip_cachep, dip);
 
 	/* If we had a csum failure make sure to clear the uptodate flag */
 	if (err)
@@ -6123,7 +6124,7 @@ out_test:
 out_done:
 	bio->bi_private = dip->private;
 
-	kfree(dip);
+	kmem_cache_free(btrfs_dip_cachep, dip);
 
 	/* If we had an error make sure to clear the uptodate flag */
 	if (err)
@@ -6346,7 +6347,7 @@ static void btrfs_submit_direct(int rw, struct bio *bio, struct inode *inode,
 
 	skip_sum = BTRFS_I(inode)->flags & BTRFS_INODE_NODATASUM;
 
-	dip = kmalloc(sizeof(*dip), GFP_NOFS);
+	dip = kmem_cache_alloc(btrfs_dip_cachep, GFP_NOFS);
 	if (!dip) {
 		ret = -ENOMEM;
 		goto free_ordered;
@@ -7064,6 +7065,8 @@ void btrfs_destroy_cachep(void)
 		kmem_cache_destroy(btrfs_path_cachep);
 	if (btrfs_free_space_cachep)
 		kmem_cache_destroy(btrfs_free_space_cachep);
+	if (btrfs_dip_cachep)
+		kmem_cache_destroy(btrfs_dip_cachep);
 }
 
 int btrfs_init_cachep(void)
@@ -7096,6 +7099,12 @@ int btrfs_init_cachep(void)
 			sizeof(struct btrfs_free_space), 0,
 			SLAB_RECLAIM_ACCOUNT | SLAB_MEM_SPREAD, NULL);
 	if (!btrfs_free_space_cachep)
+		goto fail;
+
+	btrfs_dip_cachep = kmem_cache_create("btrfs_dio_private_cache",
+			sizeof(struct btrfs_dio_private), 0,
+			SLAB_RECLAIM_ACCOUNT | SLAB_MEM_SPREAD, NULL);
+	if (!btrfs_dip_cachep)
 		goto fail;
 
 	return 0;
