@@ -1145,7 +1145,7 @@ int btrfs_qgroup_account_ref(struct btrfs_trans_handle *trans,
 
 		ulist_reinit(tmp);
 						/* XXX id not needed */
-		ulist_add(tmp, qg->qgroupid, (unsigned long)qg, GFP_ATOMIC);
+		ulist_add(tmp, qg->qgroupid, (u64)qg, GFP_ATOMIC);
 		ULIST_ITER_INIT(&tmp_uiter);
 		while ((tmp_unode = ulist_next(tmp, &tmp_uiter))) {
 			struct btrfs_qgroup_list *glist;
@@ -1158,7 +1158,7 @@ int btrfs_qgroup_account_ref(struct btrfs_trans_handle *trans,
 
 			list_for_each_entry(glist, &qg->groups, next_group) {
 				ulist_add(tmp, glist->group->qgroupid,
-					  (unsigned long)glist->group,
+					  (u64)glist->group,
 					  GFP_ATOMIC);
 			}
 		}
@@ -1168,7 +1168,7 @@ int btrfs_qgroup_account_ref(struct btrfs_trans_handle *trans,
 	 * step 2: walk from the new root
 	 */
 	ulist_reinit(tmp);
-	ulist_add(tmp, qgroup->qgroupid, (unsigned long)qgroup, GFP_ATOMIC);
+	ulist_add(tmp, qgroup->qgroupid, (u64)qgroup, GFP_ATOMIC);
 	ULIST_ITER_INIT(&uiter);
 	while ((unode = ulist_next(tmp, &uiter))) {
 		struct btrfs_qgroup *qg;
@@ -1190,7 +1190,7 @@ int btrfs_qgroup_account_ref(struct btrfs_trans_handle *trans,
 
 		list_for_each_entry(glist, &qg->groups, next_group) {
 			ulist_add(tmp, glist->group->qgroupid,
-				  (unsigned long)glist->group, GFP_ATOMIC);
+				  (u64)glist->group, GFP_ATOMIC);
 		}
 	}
 
@@ -1208,7 +1208,7 @@ int btrfs_qgroup_account_ref(struct btrfs_trans_handle *trans,
 			continue;
 
 		ulist_reinit(tmp);
-		ulist_add(tmp, qg->qgroupid, (unsigned long)qg, GFP_ATOMIC);
+		ulist_add(tmp, qg->qgroupid, (u64)qg, GFP_ATOMIC);
 		ULIST_ITER_INIT(&tmp_uiter);
 		while ((tmp_unode = ulist_next(tmp, &tmp_uiter))) {
 			struct btrfs_qgroup_list *glist;
@@ -1225,7 +1225,7 @@ int btrfs_qgroup_account_ref(struct btrfs_trans_handle *trans,
 
 			list_for_each_entry(glist, &qg->groups, next_group) {
 				ulist_add(tmp, glist->group->qgroupid,
-					  (unsigned long)glist->group,
+					  (u64)glist->group,
 					  GFP_ATOMIC);
 			}
 		}
@@ -1364,13 +1364,17 @@ int btrfs_qgroup_inherit(struct btrfs_trans_handle *trans,
 	spin_lock(&fs_info->qgroup_lock);
 
 	dstgroup = add_qgroup_rb(fs_info, objectid);
-	if (!dstgroup)
+	if (IS_ERR(dstgroup)) {
+		ret = PTR_ERR(dstgroup);
 		goto unlock;
+	}
 
 	if (srcid) {
 		srcgroup = find_qgroup_rb(fs_info, srcid);
-		if (!srcgroup)
+		if (!srcgroup) {
+			ret = -EINVAL;
 			goto unlock;
+		}
 		dstgroup->rfer = srcgroup->rfer - level_size;
 		dstgroup->rfer_cmpr = srcgroup->rfer_cmpr - level_size;
 		srcgroup->excl = level_size;
@@ -1379,8 +1383,10 @@ int btrfs_qgroup_inherit(struct btrfs_trans_handle *trans,
 		qgroup_dirty(fs_info, srcgroup);
 	}
 
-	if (!inherit)
+	if (!inherit) {
+		ret = -EINVAL;
 		goto unlock;
+	}
 
 	i_qgroups = (u64 *)(inherit + 1);
 	for (i = 0; i < inherit->num_qgroups; ++i) {
@@ -1467,7 +1473,7 @@ int btrfs_qgroup_reserve(struct btrfs_root *root, u64 num_bytes)
 	 * be exceeded
 	 */
 	ulist = ulist_alloc(GFP_ATOMIC);
-	ulist_add(ulist, qgroup->qgroupid, (unsigned long)qgroup, GFP_ATOMIC);
+	ulist_add(ulist, qgroup->qgroupid, (u64)qgroup, GFP_ATOMIC);
 	ULIST_ITER_INIT(&uiter);
 	while ((unode = ulist_next(ulist, &uiter))) {
 		struct btrfs_qgroup *qg;
@@ -1487,7 +1493,7 @@ int btrfs_qgroup_reserve(struct btrfs_root *root, u64 num_bytes)
 
 		list_for_each_entry(glist, &qg->groups, next_group) {
 			ulist_add(ulist, glist->group->qgroupid,
-				  (unsigned long)glist->group, GFP_ATOMIC);
+				  (u64)glist->group, GFP_ATOMIC);
 		}
 	}
 	if (ret)
@@ -1539,7 +1545,7 @@ void btrfs_qgroup_free(struct btrfs_root *root, u64 num_bytes)
 		goto out;
 
 	ulist = ulist_alloc(GFP_ATOMIC);
-	ulist_add(ulist, qgroup->qgroupid, (unsigned long)qgroup, GFP_ATOMIC);
+	ulist_add(ulist, qgroup->qgroupid, (u64)qgroup, GFP_ATOMIC);
 	ULIST_ITER_INIT(&uiter);
 	while ((unode = ulist_next(ulist, &uiter))) {
 		struct btrfs_qgroup *qg;
@@ -1551,7 +1557,7 @@ void btrfs_qgroup_free(struct btrfs_root *root, u64 num_bytes)
 
 		list_for_each_entry(glist, &qg->groups, next_group) {
 			ulist_add(ulist, glist->group->qgroupid,
-				  (unsigned long)glist->group, GFP_ATOMIC);
+				  (u64)glist->group, GFP_ATOMIC);
 		}
 	}
 

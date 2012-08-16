@@ -421,12 +421,6 @@ void btrfs_put_tree_mod_seq(struct btrfs_fs_info *fs_info,
 	spin_unlock(&fs_info->tree_mod_seq_lock);
 
 	/*
-	 * we removed the lowest blocker from the blocker list, so there may be
-	 * more processible delayed refs.
-	 */
-	wake_up(&fs_info->tree_mod_seq_wait);
-
-	/*
 	 * anything that's lower than the lowest existing (read: blocked)
 	 * sequence number can be removed from the tree.
 	 */
@@ -630,6 +624,9 @@ __tree_mod_log_free_eb(struct btrfs_fs_info *fs_info, struct extent_buffer *eb)
 	int i;
 	u32 nritems;
 	int ret;
+
+	if (btrfs_header_level(eb) == 0)
+		return;
 
 	nritems = btrfs_header_nritems(eb);
 	for (i = nritems - 1; i >= 0; i--) {
@@ -5076,6 +5073,7 @@ static void tree_move_down(struct btrfs_root *root,
 			   struct btrfs_path *path,
 			   int *level, int root_level)
 {
+	BUG_ON(*level == 0);
 	path->nodes[*level - 1] = read_node_slot(root, path->nodes[*level],
 					path->slots[*level]);
 	path->slots[*level - 1] = 0;
@@ -5092,7 +5090,7 @@ static int tree_move_next_or_upnext(struct btrfs_root *root,
 
 	path->slots[*level]++;
 
-	while (path->slots[*level] == nritems) {
+	while (path->slots[*level] >= nritems) {
 		if (*level == root_level)
 			return -1;
 
@@ -5436,9 +5434,11 @@ int btrfs_compare_trees(struct btrfs_root *left_root,
 					goto out;
 				advance_right = ADVANCE;
 			} else {
+				WARN_ON(!extent_buffer_uptodate(left_path->nodes[0]));
 				ret = tree_compare_item(left_root, left_path,
 						right_path, tmp_buf);
 				if (ret) {
+					WARN_ON(!extent_buffer_uptodate(left_path->nodes[0]));
 					ret = changed_cb(left_root, right_root,
 						left_path, right_path,
 						&left_key,
