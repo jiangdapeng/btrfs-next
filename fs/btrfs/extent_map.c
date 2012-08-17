@@ -35,6 +35,7 @@ void extent_map_exit(void)
 void extent_map_tree_init(struct extent_map_tree *tree)
 {
 	tree->map = RB_ROOT;
+	INIT_LIST_HEAD(&tree->modified_extents);
 	rwlock_init(&tree->lock);
 }
 
@@ -55,6 +56,7 @@ struct extent_map *alloc_extent_map(void)
 	em->flags = 0;
 	em->compress_type = BTRFS_COMPRESS_NONE;
 	atomic_set(&em->refs, 1);
+	INIT_LIST_HEAD(&em->list);
 	return em;
 }
 
@@ -188,6 +190,11 @@ static void try_merge_map(struct extent_map_tree *tree, struct extent_map *em)
 	struct extent_map *merge = NULL;
 	struct rb_node *rb;
 
+	if (test_bit(EXTENT_FLAG_PINNED, &em->flags)) {
+		printk(KERN_ERR "would have merged a pinned em\n");
+		return;
+	}
+
 	if (em->start != 0) {
 		rb = rb_prev(&em->rb_node);
 		if (rb)
@@ -198,6 +205,13 @@ static void try_merge_map(struct extent_map_tree *tree, struct extent_map *em)
 			em->block_len += merge->block_len;
 			em->block_start = merge->block_start;
 			merge->in_tree = 0;
+			if (merge->generation > em->generation) {
+				em->generation = merge->generation;
+				list_replace_init(&merge->list,
+						  &em->list);
+			} else {
+				list_del_init(&merge->list);
+			}
 			rb_erase(&merge->rb_node, &tree->map);
 			free_extent_map(merge);
 		}
@@ -211,11 +225,29 @@ static void try_merge_map(struct extent_map_tree *tree, struct extent_map *em)
 		em->block_len += merge->len;
 		rb_erase(&merge->rb_node, &tree->map);
 		merge->in_tree = 0;
+		if (merge->generation > em->generation) {
+			em->generation = merge->generation;
+			list_replace_init(&merge->list, &em->list);
+		} else {
+			list_del_init(&merge->list);
+		}
 		free_extent_map(merge);
 	}
 }
 
-int unpin_extent_cache(struct extent_map_tree *tree, u64 start, u64 len)
+/**
+ * unpint_extent_cache - unpin an extent from the cache
+ * @tree:	tree to unpin the extent in
+ * @start:	logical offset in the file
+ * @len:	length of the extent
+ * @gen:	generation that this extent has been modified in
+ *
+ * Called after an extent has been written to disk properly.  Set the generation
+ * to the generation that actually added the file item to the inode so we know
+ * we need to sync this extent when we call fsync().
+ */
+int unpin_extent_cache(struct extent_map_tree *tree, u64 start, u64 len,
+		       u64 gen)
 {
 	int ret = 0;
 	struct extent_map *em;
@@ -223,11 +255,14 @@ int unpin_extent_cache(struct extent_map_tree *tree, u64 start, u64 len)
 	write_lock(&tree->lock);
 	em = lookup_extent_mapping(tree, start, len);
 
-	WARN_ON(!em || em->start != start);
+	WARN_ON(!em);
+	WARN_ON(em->start != start);
 
 	if (!em)
 		goto out;
 
+	list_move(&em->list, &tree->modified_extents);
+	em->generation = gen;
 	clear_bit(EXTENT_FLAG_PINNED, &em->flags);
 
 	try_merge_map(tree, em);
@@ -358,6 +393,7 @@ int remove_extent_mapping(struct extent_map_tree *tree, struct extent_map *em)
 
 	WARN_ON(test_bit(EXTENT_FLAG_PINNED, &em->flags));
 	rb_erase(&em->rb_node, &tree->map);
+	list_del_init(&em->list);
 	em->in_tree = 0;
 	return ret;
 }

@@ -248,7 +248,7 @@ static noinline int cow_file_range_inline(struct btrfs_trans_handle *trans,
 		return 1;
 	}
 
-	ret = btrfs_drop_extents(trans, inode, start, aligned_end,
+	ret = btrfs_drop_extents(trans, root, inode, start, aligned_end,
 				 &hint_byte, 1);
 	if (ret)
 		return ret;
@@ -1804,7 +1804,8 @@ static int insert_reserved_file_extent(struct btrfs_trans_handle *trans,
 	 * the caller is expected to unpin it and allow it to be merged
 	 * with the others.
 	 */
-	ret = btrfs_drop_extents(trans, inode, file_pos, file_pos + num_bytes,
+	ret = btrfs_drop_extents(trans, root, inode, file_pos,
+				 file_pos + num_bytes,
 				 &hint, 0);
 	if (ret)
 		goto out;
@@ -1929,7 +1930,8 @@ static int btrfs_finish_ordered_io(struct btrfs_ordered_extent *ordered_extent)
 						BTRFS_FILE_EXTENT_REG);
 		unpin_extent_cache(&BTRFS_I(inode)->extent_tree,
 				   ordered_extent->file_offset,
-				   ordered_extent->len);
+				   ordered_extent->len,
+				   trans->transid);
 	}
 
 	if (ret < 0) {
@@ -3622,7 +3624,8 @@ int btrfs_cont_expand(struct inode *inode, loff_t oldsize, loff_t size)
 				break;
 			}
 
-			err = btrfs_drop_extents(trans, inode, cur_offset,
+			err = btrfs_drop_extents(trans, root, inode,
+						 cur_offset,
 						 cur_offset + hole_size,
 						 &hint_byte, 1);
 			if (err) {

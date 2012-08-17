@@ -18,6 +18,7 @@
 
 #include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/list_sort.h>
 #include "ctree.h"
 #include "transaction.h"
 #include "disk-io.h"
@@ -550,7 +551,7 @@ static noinline int replay_one_extent(struct btrfs_trans_handle *trans,
 
 	saved_nbytes = inode_get_bytes(inode);
 	/* drop any overlapping extents */
-	ret = btrfs_drop_extents(trans, inode, start, extent_end,
+	ret = btrfs_drop_extents(trans, root, inode, start, extent_end,
 				 &alloc_hint, 1);
 	BUG_ON(ret);
 
@@ -2803,6 +2804,151 @@ static noinline int copy_items(struct btrfs_trans_handle *trans,
 	return ret;
 }
 
+static int extent_cmp(void *priv, struct list_head *a, struct list_head *b)
+{
+	struct extent_map *em1, *em2;
+
+	em1 = list_entry(a, struct extent_map, list);
+	em2 = list_entry(b, struct extent_map, list);
+
+	if (em1->start < em2->start)
+		return -1;
+	else if (em1->start > em2->start)
+		return 1;
+	return 0;
+}
+
+static int btrfs_log_changed_extents(struct btrfs_trans_handle *trans,
+				     struct btrfs_root *root,
+				     struct inode *inode,
+				     struct btrfs_path *path,
+				     struct btrfs_path *dst_path)
+{
+	struct btrfs_root *log = root->log_root;
+	struct extent_map *em, *n;
+	struct list_head extents;
+	struct extent_map_tree *tree = &BTRFS_I(inode)->extent_tree;
+	struct extent_buffer *src = NULL;
+	struct btrfs_key key;
+	u64 test_gen;
+	int ins_start_slot = 0;
+	int ins_nr = 0;
+	int nritems;
+	int ret;
+	int err = 0;
+	bool drop = (BTRFS_I(inode)->logged_trans == trans->transid);
+
+	INIT_LIST_HEAD(&extents);
+
+	write_lock(&tree->lock);
+	test_gen = root->fs_info->last_trans_committed;
+
+	list_for_each_entry_safe(em, n, &tree->modified_extents, list) {
+		list_del_init(&em->list);
+		if (em->generation <= test_gen)
+			continue;
+		list_add_tail(&em->list, &extents);
+	}
+
+	list_sort(NULL, &extents, extent_cmp);
+
+	while (!list_empty(&extents)) {
+		em = list_entry(extents.next, struct extent_map, list);
+
+		list_del_init(&em->list);
+
+		/*
+		 * If we had an error we just need to delete everybody from our
+		 * private list.
+		 */
+		if (err)
+			continue;
+
+		key.objectid = inode->i_ino;
+		key.type = BTRFS_EXTENT_DATA_KEY;
+		key.offset = em->start;
+
+		ret = btrfs_search_slot(NULL, root, &key, path, 0, 0);
+		if (ret < 0) {
+			err = ret;
+			continue;
+		}
+		BUG_ON(ret);
+
+again:
+		printk(KERN_ERR "logging [%Lu-%Lu]\n", em->start, em->len);
+		if (drop) {
+			u64 tmp;
+			ret = btrfs_drop_extents(trans, log, inode,
+						 em->start,
+						 em->start + em->len,
+						 &tmp, 0);
+			if (ret) {
+				err = ret;
+				continue;
+			}
+		}
+
+		src = path->nodes[0];
+		if (ins_nr && ins_start_slot + ins_nr == path->slots[0]) {
+			ins_nr++;
+			goto next_slot;
+		} else if (!ins_nr) {
+			ins_start_slot = path->slots[0];
+			ins_nr = 1;
+			goto next_slot;
+		}
+
+		ret = copy_items(trans, log, dst_path, src, ins_start_slot,
+				 ins_nr, LOG_INODE_ALL);
+		if (ret) {
+			ins_nr = 0;
+			err = ret;
+			continue;
+		}
+		ins_nr = 1;
+		ins_start_slot = path->slots[0];
+next_slot:
+		if (list_empty(&extents))
+			break;
+		nritems = btrfs_header_nritems(path->nodes[0]);
+		path->slots[0]++;
+		if (path->slots[0] < nritems) {
+			em = list_entry(extents.next, struct extent_map, list);
+			btrfs_item_key_to_cpu(path->nodes[0], &key,
+					      path->slots[0]);
+			if (em->start == key.offset) {
+				list_del_init(&em->list);
+				goto again;
+			}
+		}
+		if (ins_nr) {
+			ret = copy_items(trans, log, dst_path, src,
+					 ins_start_slot, ins_nr,
+					 LOG_INODE_ALL);
+			ins_nr = 0;
+			if (ret) {
+				err = ret;
+				continue;
+			}
+		}
+		btrfs_release_path(path);
+	}
+	if (ins_nr) {
+		ret = copy_items(trans, log, dst_path, src,
+				 ins_start_slot, ins_nr, LOG_INODE_ALL);
+		if (ret) {
+			err = ret;
+			goto out;
+		}
+		ins_nr = 0;
+	}
+out:
+	WARN_ON(!list_empty(&extents));
+	write_unlock(&tree->lock);
+	return err;
+}
+
 /* log a single inode in the tree log.
  * At least one parent directory for this inode must exist in the tree
  * or be logged already.
@@ -2832,6 +2978,7 @@ static int btrfs_log_inode(struct btrfs_trans_handle *trans,
 	int nritems;
 	int ins_start_slot = 0;
 	int ins_nr;
+	bool fast_search = false;
 	u64 ino = btrfs_ino(inode);
 
 	log = root->log_root;
@@ -2851,10 +2998,8 @@ static int btrfs_log_inode(struct btrfs_trans_handle *trans,
 
 	max_key.objectid = ino;
 
-	/* today the code can only do partial logging of directories */
-	if (!S_ISDIR(inode->i_mode))
-	    inode_only = LOG_INODE_ALL;
 
+	/* today the code can only do partial logging of directories */
 	if (inode_only == LOG_INODE_EXISTS || S_ISDIR(inode->i_mode))
 		max_key.type = BTRFS_XATTR_ITEM_KEY;
 	else
@@ -2881,7 +3026,16 @@ static int btrfs_log_inode(struct btrfs_trans_handle *trans,
 			max_key_type = BTRFS_XATTR_ITEM_KEY;
 		ret = drop_objectid_items(trans, log, path, ino, max_key_type);
 	} else {
-		ret = btrfs_truncate_inode_items(trans, log, inode, 0, 0);
+		if (test_and_clear_bit(BTRFS_INODE_NEEDS_FULL_SYNC,
+				       &BTRFS_I(inode)->runtime_flags)) {
+			ret = btrfs_truncate_inode_items(trans, log,
+							 inode, 0, 0);
+		} else {
+			fast_search = true;
+			max_key.type = BTRFS_XATTR_ITEM_KEY;
+			ret = drop_objectid_items(trans, log, path, ino,
+						  BTRFS_XATTR_ITEM_KEY);
+		}
 	}
 	if (ret) {
 		err = ret;
@@ -2960,7 +3114,18 @@ next_slot:
 		}
 		ins_nr = 0;
 	}
-	WARN_ON(ins_nr);
+
+	if (fast_search) {
+		btrfs_release_path(path);
+		btrfs_release_path(dst_path);
+		ret = btrfs_log_changed_extents(trans, root, inode, path,
+						dst_path);
+		if (ret) {
+			err = ret;
+			goto out_unlock;
+		}
+	}
+
 	if (inode_only == LOG_INODE_ALL && S_ISDIR(inode->i_mode)) {
 		btrfs_release_path(path);
 		btrfs_release_path(dst_path);
@@ -2976,6 +3141,7 @@ out_unlock:
 
 	btrfs_free_path(path);
 	btrfs_free_path(dst_path);
+	printk(KERN_ERR "done syncing\n");
 	return err;
 }
 
