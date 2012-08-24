@@ -99,9 +99,9 @@ static void __init highbank_init_irq(void)
 
 #ifdef CONFIG_CACHE_L2X0
 	/* Enable PL310 L2 Cache controller */
-	highbank_smc1(0x102, 0x1);
-	l2x0_of_init(0, ~0UL);
-	outer_cache.disable = highbank_l2x0_disable;
+	//highbank_smc1(0x102, 0x1);
+	//l2x0_of_init(0, ~0UL);
+	//outer_cache.disable = highbank_l2x0_disable;
 #endif
 }
 
