@@ -426,14 +426,12 @@ static int csum_dirty_buffer(struct btrfs_root *root, struct page *page)
 	tree = &BTRFS_I(page->mapping->host)->io_tree;
 
 	eb = (struct extent_buffer *)page->private;
-	if (page != eb->pages[0])
-		return 0;
-	found_start = btrfs_header_bytenr(eb);
-	if (found_start != start) {
+	if (page != eb->pages[0]) {
 		WARN_ON(1);
 		return 0;
 	}
-	if (eb->pages[0] != page) {
+	found_start = btrfs_header_bytenr(eb);
+	if (found_start != start) {
 		WARN_ON(1);
 		return 0;
 	}
